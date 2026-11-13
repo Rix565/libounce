@@ -8,6 +8,31 @@
 #include "kernel/jit.h"
 #include "../runtime/alloc.h"
 
+#if defined(__SWITCH2__)
+// [Switch 2] The homebrew environment owns the process handle needed for code
+// mapping. Alias hooks are optional private extensions to the existing map
+// hooks; they keep RX mapped while the public Jit API writes into staging.
+Result __attribute__((weak)) __nx_jit_map_code(void* rx_addr, void* src_addr, size_t size);
+Result __attribute__((weak)) __nx_jit_unmap_code(void* rx_addr, void* src_addr, size_t size);
+Result __attribute__((weak)) __nx_jit_map_alias(void* rx_addr, size_t size);
+Result __attribute__((weak)) __nx_jit_publish_alias(void* rx_addr, const void* data, size_t size);
+
+static bool _jitEnvironmentMapsCode(void)
+{
+    return &__nx_jit_map_code && &__nx_jit_unmap_code;
+}
+
+static bool _jitEnvironmentAliasesCode(void)
+{
+    return _jitEnvironmentMapsCode() && &__nx_jit_map_alias && &__nx_jit_publish_alias;
+}
+
+static bool _jitUsesEnvironmentAlias(const Jit* j)
+{
+    return j->type == JitType_SetProcessMemoryPermission && j->rw_addr != j->src_addr;
+}
+#endif
+
 Result jitCreate(Jit* j, size_t size)
 {
     JitType type;
@@ -23,6 +48,12 @@ Result jitCreate(Jit* j, size_t size)
              && (envGetOwnProcessHandle() != INVALID_HANDLE)) {
         type = JitType_SetProcessMemoryPermission;
     }
+#if defined(__SWITCH2__)
+    // Use the environment's code mapping, with the same transitions.
+    else if (_jitEnvironmentMapsCode()) {
+        type = JitType_SetProcessMemoryPermission;
+    }
+#endif
     else {
         // Jit is unavailable. :(
         return MAKERESULT(Module_Libnx, LibnxError_JitUnavailable);
@@ -54,6 +85,31 @@ Result jitCreate(Jit* j, size_t size)
         if (!j->rv) {
             rc = MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
         }
+#if defined(__SWITCH2__)
+        else if (_jitEnvironmentAliasesCode()) {
+            // [Switch 2] The locked source backs RX; writable bytes live in a
+            // separate staging allocation until publication through RO.
+            void* staging = __libnx_aligned_alloc(0x1000, j->size);
+            if (!staging) {
+                rc = MAKERESULT(Module_Libnx, LibnxError_OutOfMemory);
+            }
+            else {
+                rc = __nx_jit_map_code(j->rx_addr, j->src_addr, j->size);
+                if (R_SUCCEEDED(rc)) {
+                    j->rw_addr = staging;
+                    rc = __nx_jit_map_alias(j->rx_addr, j->size);
+                    if (R_FAILED(rc)) {
+                        Result unmap_rc = __nx_jit_unmap_code(j->rx_addr, j->src_addr, j->size);
+                        if (R_FAILED(unmap_rc))
+                            return unmap_rc; // Keep the object for a retry with jitClose.
+                        j->rw_addr = j->src_addr;
+                    }
+                }
+                if (R_FAILED(rc))
+                    __libnx_free(staging);
+            }
+        }
+#endif
         break;
 
     case JitType_CodeMemory:
@@ -91,6 +147,13 @@ Result jitCreate(Jit* j, size_t size)
     }
 
     if (R_FAILED(rc)) {
+#if defined(__SWITCH2__)
+        if (j->type == JitType_SetProcessMemoryPermission && j->rv) {
+            virtmemLock();
+            virtmemRemoveReservation(j->rv);
+            virtmemUnlock();
+        }
+#endif
         __libnx_free(j->src_addr);
         j->src_addr = NULL;
     }
@@ -104,6 +167,14 @@ Result jitTransitionToWritable(Jit* j)
 
     switch (j->type) {
     case JitType_SetProcessMemoryPermission:
+#if defined(__SWITCH2__)
+        if (_jitUsesEnvironmentAlias(j))
+            break;
+        if (_jitEnvironmentMapsCode()) {
+            if (j->is_executable) rc = __nx_jit_unmap_code(j->rx_addr, j->src_addr, j->size);
+            break;
+        }
+#endif
         if (j->is_executable) rc = svcUnmapProcessCodeMemory(envGetOwnProcessHandle(), (u64) j->rx_addr, (u64) j->src_addr, j->size);
         break;
 
@@ -123,6 +194,23 @@ Result jitTransitionToExecutable(Jit* j)
 
     switch (j->type) {
     case JitType_SetProcessMemoryPermission:
+#if defined(__SWITCH2__)
+        if (_jitUsesEnvironmentAlias(j)) {
+            if (!j->is_executable) {
+                rc = __nx_jit_publish_alias(j->rx_addr, j->rw_addr, j->size);
+                if (R_SUCCEEDED(rc)) armICacheInvalidate(j->rx_addr, j->size);
+            }
+            break;
+        }
+        if (_jitEnvironmentMapsCode()) {
+            if (!j->is_executable) {
+                armDCacheFlush(j->src_addr, j->size);
+                rc = __nx_jit_map_code(j->rx_addr, j->src_addr, j->size);
+                if (R_SUCCEEDED(rc)) armICacheInvalidate(j->rx_addr, j->size);
+            }
+            break;
+        }
+#endif
         if (!j->is_executable) {
             rc = svcMapProcessCodeMemory(envGetOwnProcessHandle(), (u64) j->rx_addr, (u64) j->src_addr, j->size);
 
@@ -154,6 +242,19 @@ Result jitClose(Jit* j)
     switch (j->type)
     {
     case JitType_SetProcessMemoryPermission:
+#if defined(__SWITCH2__)
+        if (_jitUsesEnvironmentAlias(j)) {
+            rc = __nx_jit_unmap_code(j->rx_addr, j->src_addr, j->size);
+            if (R_SUCCEEDED(rc)) {
+                virtmemLock();
+                virtmemRemoveReservation(j->rv);
+                virtmemUnlock();
+                __libnx_free(j->rw_addr);
+                j->rw_addr = NULL;
+            }
+            break;
+        }
+#endif
         rc = jitTransitionToWritable(j);
 
         if (R_SUCCEEDED(rc)) {

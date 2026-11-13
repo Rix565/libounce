@@ -222,3 +222,88 @@ void padRepeaterUpdate(PadRepeater* r, u64 button_mask);
 NX_CONSTEXPR u64 padRepeaterGetButtons(const PadRepeater* r) {
     return r->counter == 0 ? r->button_mask : 0;
 }
+
+#if defined(__SWITCH2__)
+#include "../../switch2/services/nmouse.h"
+
+/// Which Joy-Con a \ref PadPointer follows.
+typedef enum {
+    PadPointerSide_None  = 0,   ///< No Joy-Con pointer is in use.
+    PadPointerSide_Left  = 1,   ///< A left Joy-Con.
+    PadPointerSide_Right = 2,   ///< A right Joy-Con.
+} PadPointerSide;
+
+/// Most Joy-Con pointers that a \ref PadPointer tracks at once.
+#define PAD_POINTER_MAX_DEVICES 4
+
+/// One Joy-Con pointer that a \ref PadPointer tracks. Private.
+typedef struct {
+    HidNmouseHandle handle;
+    u64 sampling_number;        ///< Newest sample read.
+    u32 buttons;                ///< Buttons of that sample.
+} PadPointerDevice;
+
+/**
+ * @brief Pointer state object (Switch 2): the Joy-Con mouse of the controllers of a \ref PadState.
+ * @note A Joy-Con works as a pointer when it slides on a surface. The pointer follows the
+ *       Joy-Con that last moved, scrolled or changed a button.
+ */
+typedef struct {
+    bool active;                ///< A Joy-Con pointer is in use on the pad's controllers.
+    PadPointerSide side;        ///< Which Joy-Con the pointer follows.
+    s32 x;                      ///< Pointer X, from 0 to the width given to \ref padPointerInitialize minus 1.
+    s32 y;                      ///< Pointer Y, from 0 to the height minus 1.
+    s32 delta_x;                ///< Movement in X since the previous \ref padPointerUpdate.
+    s32 delta_y;                ///< Movement in Y since the previous \ref padPointerUpdate.
+    s32 wheel_delta_y;          ///< Vertical scrolling since the previous update (the Joy-Con's stick), positive upward.
+    u32 buttons_cur;            ///< Held \ref HidMouseButton.
+    u32 buttons_old;            ///< Held \ref HidMouseButton at the previous update.
+    HidNmouseHandle current;    ///< Private: the followed Joy-Con.
+    PadPointerDevice devices[PAD_POINTER_MAX_DEVICES]; ///< Private.
+    u32 device_count;           ///< Private.
+} PadPointer;
+
+/**
+ * @brief Initializes a \ref PadPointer and, for the first one, the Joy-Con pointers of the process
+ *        (\ref hidInitializeNmouse).
+ * @param[in] pointer Pointer to \ref PadPointer.
+ * @param[in] width Width of the pointer area, for example the screen width.
+ * @param[in] height Height of the pointer area.
+ * @note The first initialization sets the pointer area for every \ref PadPointer.
+ */
+Result padPointerInitialize(PadPointer* pointer, s32 width, s32 height);
+
+/**
+ * @brief Finishes a \ref PadPointer. The last one releases the Joy-Con pointers (\ref hidFinalizeNmouse).
+ * @param[in] pointer Pointer to \ref PadPointer.
+ */
+void padPointerExit(PadPointer* pointer);
+
+/**
+ * @brief Updates the pointer from the Joy-Cons of the pad's controllers. Call it once per frame, after \ref padUpdate.
+ * @param[in] pointer Pointer to \ref PadPointer.
+ * @param[in] pad The \ref PadState whose controllers give the pointer.
+ * @note Movement and scrolling are summed over the samples since the previous update; the
+ *       service keeps the last 16 samples of each Joy-Con (80 ms).
+ */
+void padPointerUpdate(PadPointer* pointer, const PadState* pad);
+
+/**
+ * @brief Retrieves the held pointer buttons.
+ * @return Bitfield of \ref HidMouseButton. By default a Joy-Con's L/ZL or R/ZR give \ref HidMouseButton_Left;
+ *         \ref hidSetNmouseButtonConfigJoyLeftJcms and \ref hidSetNmouseButtonConfigJoyRightJcms change this.
+ */
+NX_CONSTEXPR u32 padPointerGetButtons(const PadPointer* pointer) {
+    return pointer->buttons_cur;
+}
+
+/// Retrieves the pointer buttons that are newly pressed (\ref HidMouseButton).
+NX_CONSTEXPR u32 padPointerGetButtonsDown(const PadPointer* pointer) {
+    return ~pointer->buttons_old & pointer->buttons_cur;
+}
+
+/// Retrieves the pointer buttons that are newly released (\ref HidMouseButton).
+NX_CONSTEXPR u32 padPointerGetButtonsUp(const PadPointer* pointer) {
+    return pointer->buttons_old & ~pointer->buttons_cur;
+}
+#endif

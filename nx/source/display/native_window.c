@@ -5,6 +5,10 @@
 #include "display/binder.h"
 #include "display/buffer_producer.h"
 #include "display/native_window.h"
+#if defined(__SWITCH2__)
+#include "../switch2/display/cpu_window.h"
+#include "../switch2/display/window_policy.h"
+#endif
 #include "nvidia/graphic_buffer.h"
 
 #define NWINDOW_MAGIC 0x6E69574E // NWin
@@ -61,6 +65,22 @@ bool nwindowIsValid(NWindow* nw)
     return nw && nw->magic == NWINDOW_MAGIC;
 }
 
+#if defined(__SWITCH2__)
+// A window without a binder queue, for the default window
+// (default_window.c). It is valid for its state (dimensions, crop, format)
+// and as a framebufferCreate target. VI2 presents the framebuffer's images
+// (switch2/display/cpu_window.c). Calls that use the queue fail.
+void _nwindowCreateForCpuWindow(NWindow* nw)
+{
+    memset(nw, 0, sizeof(*nw));
+    nw->magic = NWINDOW_MAGIC;
+    nw->swap_interval = 1;
+    nw->cur_slot = -1;
+    nw->format = ~0U;
+    mutexInit(&nw->mutex);
+}
+#endif
+
 Result nwindowCreate(NWindow* nw, Service* binder_session, s32 binder_id, bool producer_controlled_by_app)
 {
     Result rc;
@@ -106,6 +126,37 @@ void nwindowClose(NWindow* nw)
     memset(nw, 0, sizeof(*nw));
 }
 
+#if defined(__SWITCH2__)
+// A window with per-mode dimensions (nwindowSetModeDimensions)
+// reports the size for the current operation mode.
+Result nwindowGetDimensions(NWindow* nw, u32* out_width, u32* out_height)
+{
+    if (!nwindowIsValid(nw))
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    if (!out_width || !out_height)
+        return MAKERESULT(Module_Libnx, LibnxError_BadInput);
+
+    _nwindowApplyModeDimensions(nw);
+    *out_width = nw->width ? nw->width : nw->default_width;
+    *out_height = nw->height ? nw->height : nw->default_height;
+    return 0;
+}
+
+// One fixed size replaces per-mode dimensions.
+Result nwindowSetDimensions(NWindow* nw, u32 width, u32 height)
+{
+    if (!nwindowIsValid(nw))
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+    if ((nw->width || nw->height) && nw->slots_configured)
+        return MAKERESULT(Module_Libnx, LibnxError_AlreadyInitialized);
+
+    _nwindowClearModeDimensions(nw);
+    nw->width = width;
+    nw->height = height;
+    memset(&nw->crop, 0, sizeof(nw->crop));
+    return 0;
+}
+#else
 Result nwindowGetDimensions(NWindow* nw, u32* out_width, u32* out_height)
 {
     if (!nwindowIsValid(nw))
@@ -130,6 +181,7 @@ Result nwindowSetDimensions(NWindow* nw, u32 width, u32 height)
     memset(&nw->crop, 0, sizeof(nw->crop));
     return 0;
 }
+#endif
 
 Result nwindowSetCrop(NWindow* nw, s32 left, s32 top, s32 right, s32 bottom)
 {
@@ -158,6 +210,19 @@ Result nwindowSetTransform(NWindow* nw, u32 transform)
     return 0;
 }
 
+#if defined(__SWITCH2__)
+// A swap interval replaces per-refresh-rate frame rates
+// (nwindowSetFrameRates).
+Result nwindowSetSwapInterval(NWindow* nw, u32 swap_interval)
+{
+    if (!nwindowIsValid(nw))
+        return MAKERESULT(Module_Libnx, LibnxError_NotInitialized);
+
+    _nwindowClearFrameRates(nw);
+    nw->swap_interval = swap_interval;
+    return 0;
+}
+#else
 Result nwindowSetSwapInterval(NWindow* nw, u32 swap_interval)
 {
     if (!nwindowIsValid(nw))
@@ -166,6 +231,7 @@ Result nwindowSetSwapInterval(NWindow* nw, u32 swap_interval)
     nw->swap_interval = swap_interval;
     return 0;
 }
+#endif
 
 Result nwindowConfigureBuffer(NWindow* nw, s32 slot, NvGraphicBuffer* buf)
 {

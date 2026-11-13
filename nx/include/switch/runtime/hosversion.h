@@ -2,6 +2,7 @@
  * @file hosversion.h
  * @brief Horizon OS (HOS) version detection utilities.
  * @author fincs
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
@@ -19,7 +20,7 @@
 /// Extracts the micro number from a HOS version value.
 #define HOSVER_MICRO(_version) ( (_version)        & 0xFF)
 
-/// Returns the current HOS version that was previously set with \ref hosversionSet. If version initialization fails during startup (such as in the case set:sys is not available), this function returns zero.
+/// Returns the current HOS version that was previously set with \ref hosversionSet. If version initialization fails during startup (such as in the case set:sys is not available), this function returns zero. On Switch 2, it returns 20.0.0, the earliest Switch 2 system version.
 u32 hosversionGet(void);
 
 /// Sets or overrides the current HOS version. This function is normally called automatically by libnx on startup with the version info obtained with \ref setsysGetFirmwareVersion.
@@ -27,6 +28,9 @@ void hosversionSet(u32 version);
 
 /// Returns whether the current HOS version is augmented by running the Atmosphère custom firmware.
 bool hosversionIsAtmosphere(void);
+
+/// Returns whether kaiHEN's game-role loader started the program. That loader marks the HosVersion entry as Atmosphère's hbloader does.
+bool hosversionIsKaiHEN(void);
 
 /// Returns true if the current HOS version is equal to or above the specified major/minor/micro version.
 static inline bool hosversionAtLeast(u8 major, u8 minor, u8 micro) {

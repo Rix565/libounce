@@ -311,6 +311,9 @@ typedef enum {
     FsBisPartitionId_SignedSystemPartitionOnSafeMode = 34,
     FsBisPartitionId_DeviceTreeBlob                  = 35,
     FsBisPartitionId_System0                         = 36,
+#if defined(__SWITCH2__)
+    FsBisPartitionId_Switch2Unidentified39           = 39, ///< OpenBisFileSystem returns TargetLocked for this ID. The partition is not known.
+#endif
 } FsBisPartitionId;
 
 /// FileSystemType

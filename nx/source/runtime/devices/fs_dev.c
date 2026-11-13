@@ -13,6 +13,9 @@
 #include "runtime/util/utf.h"
 #include "runtime/env.h"
 #include "services/time.h"
+#if defined(__SWITCH2__)
+#include "services/sm.h"
+#endif
 
 #include "../alloc.h"
 #include "path_buf.h"

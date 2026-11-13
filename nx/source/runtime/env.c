@@ -28,6 +28,22 @@ static AccountUid*  g_userIdStorage = NULL;
 
 extern __attribute__((weak)) u32 __nx_applet_type;
 
+// A loader marks HosVersion Value[1]: Atmosphère's hbloader with 'ATMOSPHR',
+// kaiHEN's game-role loader with 'OUNCEHEN' (nx-hbloader switch2/config.c
+// HBLOADER_OUNCEHEN_MAGIC). This function keeps the marker above
+// MAKEHOSVERSION's bits 0-23: BIT(31) for hosversionIsAtmosphere, BIT(30)
+// for hosversionIsKaiHEN.
+static void _envSetHosVersion(const ConfigEntry* ent)
+{
+    u32 version = ent->Value[0];
+    if (ent->Value[1] == 0x41544d4f53504852UL) { // 'ATMOSPHR'
+        version |= BIT(31);
+    } else if (ent->Value[1] == 0x4f554e434548454eUL) { // 'OUNCEHEN'
+        version |= BIT(30);
+    }
+    hosversionSet(version);
+}
+
 void envSetup(void* ctx, Handle main_thread, LoaderReturnFn saved_lr)
 {
     // Detect and set up NSO environment.
@@ -101,14 +117,10 @@ void envSetup(void* ctx, Handle main_thread, LoaderReturnFn saved_lr)
             g_userIdStorage = (AccountUid*)(uintptr_t)ent->Value[0];
             break;
 
-        case EntryType_HosVersion: {
-            u32 version = ent->Value[0];
-            if (ent->Value[1] == 0x41544d4f53504852UL) { // 'ATMOSPHR'
-                version |= BIT(31);
-            }
-            hosversionSet(version);
+        case EntryType_HosVersion:
+            // [Switch 2] Also recognizes kaiHEN's loader marker. See _envSetHosVersion.
+            _envSetHosVersion(ent);
             break;
-        }
 
         case EntryType_SyscallAvailableHint2:
             g_syscallHints[2] = ent->Value[0];

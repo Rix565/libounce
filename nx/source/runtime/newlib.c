@@ -336,6 +336,78 @@ void __libnx_init_time(void)
     }
 }
 
+#if defined(__SWITCH2__)
+// The Switch 2 system tick: 31.25 MHz, 32 ns per tick.
+#define SWITCH2_TICK_FREQ 31250000ULL
+#define SWITCH2_TICK_NS   32ULL
+
+int __syscall_clock_getres(clockid_t clock_id, struct timespec *tp)
+{
+    if(clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_REALTIME) {
+        errno = EINVAL;
+        return -1;
+    }
+    if(tp) {
+        tp->tv_sec = 0;
+        tp->tv_nsec = SWITCH2_TICK_NS;
+        return 0;
+    } else {
+        errno = EFAULT;
+        return -1;
+    }
+}
+
+int __syscall_clock_gettime(clockid_t clock_id, struct timespec *tp)
+{
+    if(clock_id != CLOCK_MONOTONIC && clock_id != CLOCK_REALTIME) {
+        errno = EINVAL;
+        return -1;
+    }
+    if(tp) {
+
+        if(__boottime == UINT64_MAX) {
+            errno = EIO;
+            return -1;
+        }
+
+        u64 now=armGetSystemTick() - __bootticks;
+
+        u64 __bootsecs = now / SWITCH2_TICK_FREQ;
+
+        tp->tv_sec =  __bootsecs + __boottime;
+        tp->tv_nsec = (now -  __bootsecs * SWITCH2_TICK_FREQ) * SWITCH2_TICK_NS;
+        return 0;
+    } else {
+        errno = EFAULT;
+        return -1;
+    }
+}
+
+int __syscall_gettod_r(struct _reent *ptr, struct timeval *tp, struct timezone *tz)
+{
+    if (tp != NULL) {
+
+        if(__boottime == UINT64_MAX) {
+            ptr->_errno = EIO;
+            return -1;
+        }
+
+        u64 now=armGetSystemTick() - __bootticks;
+
+        u64 __bootsecs = now / SWITCH2_TICK_FREQ;
+
+        tp->tv_sec =  __bootsecs + __boottime;
+        tp->tv_usec = (now -  __bootsecs * SWITCH2_TICK_FREQ) * SWITCH2_TICK_NS / 1000ULL;
+    }
+
+    if (tz != NULL) {
+        tz->tz_minuteswest = 0;
+        tz->tz_dsttime = 0;
+    }
+
+    return 0;
+}
+#else
 static const u64 nsec_clockres =  1000000000ULL / 19200000ULL;
 
 int __syscall_clock_getres(clockid_t clock_id, struct timespec *tp)
@@ -405,6 +477,8 @@ int __syscall_gettod_r(struct _reent *ptr, struct timeval *tp, struct timezone *
 
     return 0;
 }
+
+#endif
 
 int __syscall_nanosleep(const struct timespec *req, struct timespec *rem)
 {

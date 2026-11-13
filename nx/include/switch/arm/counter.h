@@ -2,6 +2,7 @@
  * @file counter.h
  * @brief AArch64 system counter-timer.
  * @author fincs
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
@@ -27,6 +28,27 @@ static inline u64 armGetSystemTickFreq(void) {
     return ret;
 }
 
+#if defined(__SWITCH2__)
+// The Switch 2 system tick runs at 31.25 MHz: 32 ns per tick.
+
+/**
+ * @brief Converts from nanoseconds to CPU ticks unit.
+ * @param ns Time in nanoseconds.
+ * @return Time in CPU ticks.
+ */
+static inline u64 armNsToTicks(u64 ns) {
+    return ns / 32 + (ns % 32 != 0);
+}
+
+/**
+ * @brief Converts from CPU ticks unit to nanoseconds.
+ * @param tick Time in ticks.
+ * @return Time in nanoseconds.
+ */
+static inline u64 armTicksToNs(u64 tick) {
+    return tick * 32;
+}
+#else
 /**
  * @brief Converts from nanoseconds to CPU ticks unit.
  * @param ns Time in nanoseconds.
@@ -44,3 +66,4 @@ static inline u64 armNsToTicks(u64 ns) {
 static inline u64 armTicksToNs(u64 tick) {
     return (tick * 625) / 12;
 }
+#endif

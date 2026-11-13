@@ -17,6 +17,7 @@ void newlibSetup(void);
 void argvSetup(void);
 void __libnx_init_thread(void);
 void __libnx_init_time(void);
+bool __libnx_hosversion_is_set(void);
 void __libnx_init_cwd(void);
 
 extern u32 __nx_applet_type;
@@ -110,7 +111,7 @@ void __attribute__((weak)) __appInit(void)
     if (R_FAILED(rc))
         diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_InitFail_SM));
 
-    if (hosversionGet() == 0) {
+    if (!__libnx_hosversion_is_set()) {
         rc = setsysInitialize();
         if (R_SUCCEEDED(rc)) {
             SetSysFirmwareVersion fw;
@@ -149,12 +150,28 @@ void __attribute__((weak)) __appInit(void)
 }
 
 void __attribute__((weak)) userAppExit(void);
+void __attribute__((weak)) __nx_gpu_exit(void);
 void __attribute__((weak)) __nx_win_exit(void);
+
+static bool g_driversClosed;
+
+// A GPU driver linked into the program retires its device, then the default
+// window closes. This runs after the program's own cleanup (atexit handlers,
+// destructors, userAppExit), even if the program left graphics objects
+// alive, and before the services that the driver uses close. It runs once.
+static void _closeDrivers(void)
+{
+    if (g_driversClosed)
+        return;
+    g_driversClosed = true;
+    if (&__nx_gpu_exit) __nx_gpu_exit();
+    if (&__nx_win_exit) __nx_win_exit();
+}
 
 void __attribute__((weak)) __appExit(void)
 {
     if (&userAppExit) userAppExit();
-    if (&__nx_win_exit) __nx_win_exit();
+    _closeDrivers();
 
     // Cleanup default services.
     fsdevUnmountAll();
@@ -179,6 +196,22 @@ void __attribute__((weak)) __libnx_init(void* ctx, Handle main_thread, void* sav
     // Build argc/argv if present
     argvSetup();
 
+#ifdef __SWITCH2__
+    // With the mimalloc allocator (switch2/malloc/malloc.c) linked, the
+    // rest of the heap goes to it before anything allocates. Without it,
+    // newlib's malloc uses the heap through sbrk. libounce.a's copy of this
+    // file (switch2/malloc_init) refers to the allocator strongly, so that
+    // linking libounce.a brings it in; libounce_core.a's refers to it weakly.
+#ifdef LIBOUNCE_MALLOC_LINKED
+    extern void _mallocInitialize(void);
+    _mallocInitialize();
+#else
+    extern void _mallocInitialize(void) __attribute__((weak));
+    if (_mallocInitialize)
+        _mallocInitialize();
+#endif
+#endif
+
     // Initialize services.
     __appInit();
 
@@ -187,10 +220,38 @@ void __attribute__((weak)) __libnx_init(void* ctx, Handle main_thread, void* sav
     __libc_init_array();
 }
 
+#ifdef __SWITCH2__
+void __attribute__((weak)) _gsvSyncExit(void);
+void _serviceGuardCloseAll(void);
+void _threadReleaseExited(void);
+#endif
+
 void __attribute__((weak)) NX_NORETURN __libnx_exit(int rc)
 {
     // Clean up services.
     __appExit();
+
+#ifdef __SWITCH2__
+    // A program that replaces __appExit does not close the GPU driver and the
+    // window; do it before their services close below.
+    _closeDrivers();
+
+    // Close every service that is still open: those the program opened and
+    // did not close, and the default services when the program replaces
+    // __appExit. Under hbloader the process outlives the program, so a
+    // session left open would stay open for the next program.
+    _serviceGuardCloseAll();
+
+    // A GSV sync session left open belongs to the process, not the program:
+    // the next program started from hbloader could not open one. This runs
+    // after __appExit, so it also runs when a program replaces __appExit.
+    if (&_gsvSyncExit) _gsvSyncExit();
+
+    // Unmap the stacks of threads that ended but were never closed, so that
+    // the heap pages under them are free for the next program. A thread
+    // still running keeps its stack; hbloader reports it.
+    _threadReleaseExited();
+#endif
 
     __nx_exit(0, envGetExitFuncPtr());
 }

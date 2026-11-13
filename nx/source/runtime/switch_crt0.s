@@ -87,6 +87,13 @@ __nx_mod0:
     .word  0x1 // Version/Fix field, increment on recompile-the-worlds as needed
     .word  0x0 // Reserved
 
+    // libounce's record (NroOunceInfo in nro.h): a program linked with
+    // libounce has it, a libnx program does not. Loaders use it to warn about
+    // programs built for another platform.
+    .ascii "OUN0"
+    .word  __ounce_platform // NroPlatform, defined by nro_ounce.c for the build
+    .word  0x1              // version of this record
+
 .section .bss.__stack_top, "aw", %nobits
 .global __stack_top
 .align 3

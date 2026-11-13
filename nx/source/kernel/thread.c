@@ -24,6 +24,77 @@ static Thread g_mainThread;
 static u64 g_tlsUsageMask;
 static void (* g_tlsDestructors[NUM_TLS_SLOTS])(void*);
 
+#if defined(__SWITCH2__)
+// A program started by hbloader runs in the loader's process. A thread that
+// the program never closes keeps its stack mirror mapped, which leaves the
+// heap pages under it locked for the next program, and keeps its handle. The
+// stack of every thread that threadCreate made is recorded until threadClose
+// unmaps it, and at exit _threadReleaseExited releases those of the threads
+// that have ended. The records are kept here, not in the caller's Thread,
+// which the program may have freed.
+#define THREAD_STACK_RECORDS 256
+
+typedef struct {
+    void*  mirror; ///< NULL for a free record.
+    void*  mem;
+    size_t size;   ///< The mapped size.
+    Handle handle;
+} ThreadStackRecord;
+
+static ThreadStackRecord g_threadStacks[THREAD_STACK_RECORDS];
+
+// Records a new thread's stack. A thread beyond the table is not recorded.
+static void _threadRecordStack(Thread* t, size_t mapped_size) {
+    mutexLock(&g_threadMutex);
+    for (u32 i = 0; i < THREAD_STACK_RECORDS; i++) {
+        if (!g_threadStacks[i].mirror) {
+            g_threadStacks[i] = (ThreadStackRecord){t->stack_mirror, t->stack_mem, mapped_size, t->handle};
+            break;
+        }
+    }
+    mutexUnlock(&g_threadMutex);
+}
+
+static void _threadForgetStack(Thread* t) {
+    mutexLock(&g_threadMutex);
+    for (u32 i = 0; i < THREAD_STACK_RECORDS; i++) {
+        if (g_threadStacks[i].mirror == t->stack_mirror) {
+            g_threadStacks[i] = (ThreadStackRecord){0};
+            break;
+        }
+    }
+    mutexUnlock(&g_threadMutex);
+}
+
+void _threadReleaseExited(void) {
+    mutexLock(&g_threadMutex);
+    for (u32 i = 0; i < THREAD_STACK_RECORDS; i++) {
+        ThreadStackRecord* record = &g_threadStacks[i];
+        if (!record->mirror)
+            continue;
+        // Only a thread that has ended: one still running still uses its
+        // stack. The stack memory itself is not freed: the heap goes to the
+        // next program.
+        if (R_FAILED(svcWaitSynchronizationSingle(record->handle, 0)))
+            continue;
+        if (R_SUCCEEDED(svcUnmapMemory(record->mirror, record->mem, record->size))) {
+            svcCloseHandle(record->handle);
+            *record = (ThreadStackRecord){0};
+        }
+    }
+    mutexUnlock(&g_threadMutex);
+}
+#else
+static void _threadRecordStack(Thread* t, size_t mapped_size) {
+    NX_IGNORE_ARG(t);
+    NX_IGNORE_ARG(mapped_size);
+}
+
+static void _threadForgetStack(Thread* t) {
+    NX_IGNORE_ARG(t);
+}
+#endif
+
 // Thread creation args; keep this struct's size 16-byte aligned
 typedef struct {
     Thread*        t;
@@ -163,6 +234,8 @@ Result threadCreate(
         if (R_SUCCEEDED(rc))
         {
             t->handle = handle;
+            // [Switch 2] The stack is recorded until threadClose. See _threadRecordStack.
+            _threadRecordStack(t, aligned_stack_sz);
 
             // Set up child thread's reent struct, inheriting standard file handles
             _REENT_INIT_PTR(args->reent);
@@ -211,6 +284,14 @@ void threadExit(void) {
         }
     }
 
+#ifdef __SWITCH2__
+    // libounce_malloc.a's allocator, when linked, releases the thread's
+    // pages, after the TLS destructors, which can still free memory.
+    extern void _mallocThreadExit(void) __attribute__((weak));
+    if (_mallocThreadExit)
+        _mallocThreadExit();
+#endif
+
     mutexLock(&g_threadMutex);
     *t->prev_next = t->next;
     if (t->next)
@@ -244,6 +325,8 @@ Result threadClose(Thread* t) {
     rc = svcUnmapMemory(t->stack_mirror, t->stack_mem, aligned_stack_sz);
 
     if (R_SUCCEEDED(rc)) {
+        // [Switch 2] The stack is no longer recorded. See _threadForgetStack.
+        _threadForgetStack(t);
         if (t->owns_stack_mem) {
             __libnx_free(t->stack_mem);
         }

@@ -78,6 +78,9 @@ static Result _appletCmdGetSession(Service* srv, Service* srv_out, u32 cmd_id);
 
 static Result _appletOpenLibraryAppletProxy(Service* srv_out, Handle prochandle, const AppletAttribute *attr);
 static Result _appletGetSessionProxy(Service* srv_out, Handle prochandle, u32 cmd_id);
+static Result _appletGetApplicationProxy(Service* srv_out, Handle prochandle);
+static void _appletWaitForApplicationProxy(void);
+static void _appletResetCpuBoostMode(void);
 
 static Result _appletGetAppletResourceUserId(u64 *out);
 
@@ -177,13 +180,15 @@ Result _appletInitialize(void) {
                 attr = &__nx_applet_AppletAttribute;
             }
 
+            // [Switch 2] The application proxy (cmd_id 0) opens with appletOE cmd 10. See _appletGetApplicationProxy.
             if (attr==NULL)
-                rc = _appletGetSessionProxy(&g_appletProxySession, CUR_PROCESS_HANDLE, cmd_id);
+                rc = cmd_id == 0 ? _appletGetApplicationProxy(&g_appletProxySession, CUR_PROCESS_HANDLE) : _appletGetSessionProxy(&g_appletProxySession, CUR_PROCESS_HANDLE, cmd_id);
             else
                 rc = _appletOpenLibraryAppletProxy(&g_appletProxySession, CUR_PROCESS_HANDLE, attr);
 
             if (R_VALUE(rc) == AM_BUSY_ERROR) {
-                svcSleepThread(100000000);
+                // [Switch 2] The Application proxy retries after 10 ms. See _appletWaitForApplicationProxy.
+                _appletWaitForApplicationProxy();
 
                 if (__nx_applet_type == AppletType_LibraryApplet && armTicksToNs(armGetSystemTick() - start_tick) >= timeout)
                     diagAbortWithResult(MAKERESULT(Module_Libnx, LibnxError_Timeout));
@@ -383,7 +388,8 @@ void _appletCleanup(void) {
 
         if (__nx_applet_type == AppletType_Application) appletSetFocusHandlingMode(AppletFocusHandlingMode_NoSuspend);
 
-        if (g_appletCpuBoostMode != ApmCpuBoostMode_Normal) appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
+        // [Switch 2] An Application cancels its boost with common-state command 67. See _appletResetCpuBoostMode.
+        if (g_appletCpuBoostMode != ApmCpuBoostMode_Normal) _appletResetCpuBoostMode();
     }
 
     if ((envIsNso() && __nx_applet_exit_mode==0) || __nx_applet_exit_mode==1) {
@@ -498,6 +504,13 @@ Service* appletGetServiceSession_CommonStateGetter(void) {
 Service* appletGetServiceSession_SelfController(void) {
     return &g_appletISelfController;
 }
+
+#if defined(__SWITCH2__)
+Result appletGetGraphicsSupervisor(Handle* out) {
+    // Self-controller command 2000 returns one COPY session handle.
+    return _appletCmdGetHandle(&g_appletISelfController, out, 2000);
+}
+#endif
 
 Service* appletGetServiceSession_WindowController(void) {
     return &g_appletIWindowController;
@@ -685,6 +698,55 @@ static Result _appletGetSessionProxy(Service* srv_out, Handle prochandle, u32 cm
         .out_objects = srv_out,
     );
 }
+
+#if defined(__SWITCH2__)
+static Result _appletGetApplicationProxy(Service* srv_out, Handle prochandle) {
+    // appletOE command 10, with the PID, one COPY process handle and a
+    // 16-byte zero body. AM accepts libnx's zero-context CMIF envelope.
+    const struct {
+        u32 unk_x0;
+        u32 pad;
+        u64 unk_x8;
+    } in = {0};
+    serviceAssumeDomain(&g_appletSrv);
+    return serviceDispatchIn(&g_appletSrv, 10, in,
+        .in_send_pid = true,
+        .in_num_handles = 1,
+        .in_handles = { prochandle },
+        .out_num_objects = 1,
+        .out_objects = srv_out,
+    );
+}
+#else
+static Result _appletGetApplicationProxy(Service* srv_out, Handle prochandle) {
+    return _appletGetSessionProxy(srv_out, prochandle, 0);
+}
+#endif
+
+#if defined(__SWITCH2__)
+static void _appletWaitForApplicationProxy(void) {
+    // An Application retries its proxy after 10 ms. Other applet roles keep
+    // the upstream delay.
+    svcSleepThread(__nx_applet_type == AppletType_Application ? 10000000 : 100000000);
+}
+
+static void _appletResetCpuBoostMode(void) {
+    // An Application cancels its boost with common-state command 67:
+    // command 66 with mode 0 keeps the request active, 67 clears it.
+    if (__nx_applet_type == AppletType_Application)
+        appletCancelCpuBoostMode();
+    else
+        appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
+}
+#else
+static void _appletWaitForApplicationProxy(void) {
+    svcSleepThread(100000000);
+}
+
+static void _appletResetCpuBoostMode(void) {
+    appletSetCpuBoostMode(ApmCpuBoostMode_Normal);
+}
+#endif
 
 static Result _appletCmdGetSessionInU64(Service* srv, Service* srv_out, u64 inval, u32 cmd_id) {
     serviceAssumeDomain(srv);

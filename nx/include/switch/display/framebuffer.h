@@ -2,6 +2,7 @@
  * @file framebuffer.h
  * @brief Framebuffer wrapper object, providing support for software rendered graphics.
  * @author fincs
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
@@ -71,6 +72,11 @@ typedef struct Framebuffer {
  *       \ref PIXEL_FORMAT_RGB_565
  *       \ref PIXEL_FORMAT_BGRA_8888
  *       \ref PIXEL_FORMAT_RGBA_4444
+ * @note [Switch 2] \p win must be \ref nwindowGetDefault. The first call opens
+ *       its VI2 display layer. The window holds one framebuffer at a time.
+ *       The images are RGBA8 Switch 2 display images (Turing 2D block-linear),
+ *       so only linear mode is available. Call \ref framebufferMakeLinear.
+ *       \ref framebufferEnd converts from \p format. \p map is unused.
  */
 Result framebufferCreate(Framebuffer* fb, NWindow *win, u32 width, u32 height, u32 format, u32 num_fbs);
 
@@ -90,6 +96,8 @@ void framebufferClose(Framebuffer* fb);
  * @note If \ref framebufferMakeLinear was used, this function will instead return a pointer to the shadow linear buffer.
  *       In this case, the offset of a pixel is \p y * \p out_stride + \p x * \p bytes_per_pixel.
  * @note Each call to \ref framebufferBegin must be paired with a \ref framebufferEnd call.
+ * @note [Switch 2] Returns NULL unless \ref framebufferMakeLinear was used. Waits
+ *       until the display releases the next image.
  */
 void* framebufferBegin(Framebuffer* fb, u32* out_stride);
 

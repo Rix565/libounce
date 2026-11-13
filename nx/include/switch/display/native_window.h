@@ -2,6 +2,7 @@
  * @file native_window.h
  * @brief Native window (NWindow) wrapper object, used for presenting images to the display (or other sinks).
  * @author fincs
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
@@ -52,8 +53,108 @@ bool nwindowIsValid(NWindow* nw);
  *       all of this happening automatically during application startup (i.e. before main is called).
  *       If creating the default \ref NWindow fails, libnx will throw a LibnxError_BadGfxInit fatal error.
  *       Likewise, after main returns (or exit is called) libnx will clean up all resources used by it.
+ * @note [Switch 2] The default window has no binder buffer queue, because VI2 has none.
+ *       It holds its dimensions, crop and format, and \ref framebufferCreate can use it.
+ *       Its display layer opens on the first \ref framebufferCreate. Calls that use the
+ *       queue (dequeue, queue, configure, release) fail.
  */
 NWindow* nwindowGetDefault(void);
+
+#if defined(__SWITCH2__)
+#include "../../switch2/services/vi2.h"
+
+/**
+ * @brief Gets the VI2 layer that presents a window's images, opening it on first use.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault) has a layer.
+ * @param[out] out_layer The window's layer. The window owns it and closes it when the
+ *             application exits (default display, endpoint "default", attached and selected).
+ * @note One producer presents to the layer at a time: the window's framebuffer or a
+ *       Vulkan swapchain. Before another producer presents, the previous one unregisters
+ *       the layer's image (a present without the image flag) and waits for its releases.
+ */
+Result nwindowGetVi2Layer(NWindow* nw, Vi2Layer** out_layer);
+
+/**
+ * @brief Gets the VI2 display that a window's layer is attached to, opening the layer on first use.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault) has a display.
+ * @param[out] out_display The window's default display, registered in the process's VI2
+ *             session. Display events and queries (\ref vi2CreateDisplayEvent) need it.
+ * @note Destroy display events created on it before \ref nwindowReleaseVi2Layer closes it.
+ */
+Result nwindowGetVi2Display(NWindow* nw, Vi2Display** out_display);
+
+/**
+ * @brief Sets a window's size separately for handheld and docked mode.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault).
+ * @param[in] handheld_width,handheld_height Size in handheld mode.
+ * @param[in] docked_width,docked_height Size in docked mode.
+ * @note A 0x0 size uses the console's default resolution for that mode:
+ *       1920x1080 handheld, and the TV output setting docked (3840x2160 at 4K).
+ *       \ref nwindowGetDimensions then returns the size for the current mode. It
+ *       changes when \ref appletMainLoop handles the operation-mode message and,
+ *       for 0x0, when AM signals a default-resolution change. A Vulkan swapchain
+ *       on the window returns VK_SUBOPTIMAL_KHR once its size no longer matches.
+ *       \ref nwindowSetDimensions sets one fixed size again.
+ */
+Result nwindowSetModeDimensions(NWindow* nw, u32 handheld_width, u32 handheld_height,
+                                u32 docked_width, u32 docked_height);
+
+/**
+ * @brief Sets a window's frame rate for each display refresh rate.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault).
+ * @param[in] fps_at_120hz Frames per second while the display runs at 120 Hz.
+ * @param[in] fps_at_60hz Frames per second while it runs at 60 Hz.
+ * @param[in] vrr Use variable refresh rate where it is available, as
+ *            \ref nwindowSetVrr. Pass true unless the application must not run with VRR.
+ * @note A rate of 0, or a rate above the refresh rate, presents every refresh.
+ *       Rates that divide the refresh rate (40 or 30 at 120 Hz, 30 or 20 at
+ *       60 Hz) pace evenly. With VRR, other rates (45 at 120 Hz) can also pace
+ *       evenly.
+ * @note The window asks VI2 for 120 Hz when a 60 Hz display cannot present
+ *       fps_at_120hz. This applies to 0, to rates above 60, and to rates that
+ *       do not divide 60, such as 40. The display changes to 120 Hz where the
+ *       system and the display allow it (the handheld screen).
+ * @note Examples: (40, 30, true) gives 40 fps at 120 Hz and 30 fps otherwise.
+ *       (0, 0, true) presents every refresh at the highest available rate.
+ *       \ref nwindowSetSwapInterval presents every N/60 s again and withdraws
+ *       the 120 Hz request.
+ */
+Result nwindowSetFrameRates(NWindow* nw, u32 fps_at_120hz, u32 fps_at_60hz, bool vrr);
+
+/**
+ * @brief Allows or declines variable refresh rate (VRR) for a window.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault).
+ * @note VRR is allowed by default. The window declares it to VI2. VI2 enables
+ *       it where the system permits it and the display supports it (the
+ *       handheld screen, not a 60 Hz TV). \ref nwindowSetFrameRates also sets
+ *       it. Use this call when the application paces with a swap interval.
+ */
+Result nwindowSetVrr(NWindow* nw, bool enable);
+
+/**
+ * @brief Gets the interval to present a window's images with.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault).
+ * @param[out] out_numerator,out_denominator The interval in seconds, as in \ref Vi2PresentOptions.
+ * @note With frame rates (\ref nwindowSetFrameRates), the interval is the rate
+ *       for the display's current refresh rate. That refresh rate follows
+ *       VI2's refresh-rate event after the window's layer opens, and is 60 Hz
+ *       before. Without frame rates, the interval is the swap interval / 60 s,
+ *       at every refresh rate.
+ */
+Result nwindowGetPresentInterval(NWindow* nw, u16* out_numerator, u16* out_denominator);
+
+/**
+ * @brief Closes a window's VI2 layer once no producer presents to it.
+ * @param[in] nw Window. Only the default window (\ref nwindowGetDefault) has a layer.
+ * @return LibnxError_AlreadyInitialized while a framebuffer exists on the window.
+ * @note The layer holds the process's GSV root. That root delegates the GPU's
+ *       nvservices session only once. To open the GPU again after a shutdown
+ *       (for example, a Vulkan driver's shutdown), release the layer first. The
+ *       root then closes, and the next open gets a new root. The next
+ *       \ref nwindowGetVi2Layer opens a new layer.
+ */
+Result nwindowReleaseVi2Layer(NWindow* nw);
+#endif
 
 /**
  * @brief Creates a \ref NWindow.

@@ -6,6 +6,9 @@
 #include "runtime/hosversion.h"
 #include "services/nv.h"
 #include "nvidia/ioctl.h"
+#if defined(__SWITCH2__)
+#include "switch2/services/gsv.h"
+#endif
 
 __attribute__((weak)) NvServiceType __nx_nv_service_type = NvServiceType_Auto;
 __attribute__((weak)) u32 __nx_nv_transfermem_size = 0x800000;
@@ -13,10 +16,14 @@ __attribute__((weak)) u32 __nx_nv_transfermem_size = 0x800000;
 static Service g_nvSrv;
 static Service g_nvSrvClone;
 
+#if defined(__SWITCH2__)
+static bool g_nvGsvInitialized;
+#else
 static TransferMemory g_nvTransfermem;
 
 static Result _nvCmdInitialize(Handle proc, Handle sharedmem, u32 transfermem_size);
 static Result _nvSetClientPID(u64 AppletResourceUserId);
+#endif
 
 Result __attribute__((weak)) __nx_nv_create_tmem(TransferMemory *t, u32 *out_size, Permission perm) {
     *out_size = __nx_nv_transfermem_size;
@@ -25,6 +32,34 @@ Result __attribute__((weak)) __nx_nv_create_tmem(TransferMemory *t, u32 *out_siz
 
 NX_GENERATE_SERVICE_GUARD(nv);
 
+#if defined(__SWITCH2__)
+// The GSV1 root delegates the game's nvservices session (raw
+// 0x58a, gsvOpenNvServices). The session is already attached to the process.
+// There is no SM lookup, transfer-memory Initialize (cmd 3) or SetClientPID
+// (cmd 8). This function clones the session with tag 1 and sends cmd 13 with
+// feature mask 1 on the primary. serviceCreate queries the pointer buffer
+// size, which must be known before the first ioctl.
+Result _nvInitialize(void) {
+    Result rc = gsvInitialize();
+    g_nvGsvInitialized = R_SUCCEEDED(rc);
+
+    Handle h = INVALID_HANDLE;
+    if (R_SUCCEEDED(rc))
+        rc = gsvOpenNvServices(&h);
+
+    if (R_SUCCEEDED(rc)) {
+        serviceCreate(&g_nvSrv, h);
+        rc = serviceCloneEx(&g_nvSrv, 1, &g_nvSrvClone);
+    }
+
+    if (R_SUCCEEDED(rc)) {
+        const u64 features = 1;
+        rc = serviceDispatchIn(&g_nvSrv, 13, features);
+    }
+
+    return rc;
+}
+#else
 Result _nvInitialize(void) {
     Result rc = MAKERESULT(Module_Libnx, LibnxError_BadInput);
 
@@ -98,18 +133,31 @@ Result _nvInitialize(void) {
 
     return rc;
 }
+#endif
 
+#if defined(__SWITCH2__)
+void _nvCleanup(void) {
+    serviceClose(&g_nvSrvClone);
+    serviceClose(&g_nvSrv);
+    if (g_nvGsvInitialized) {
+        gsvExit();
+        g_nvGsvInitialized = false;
+    }
+}
+#else
 void _nvCleanup(void) {
     serviceClose(&g_nvSrvClone);
     serviceClose(&g_nvSrv);
     tmemWaitForPermission(&g_nvTransfermem, Perm_Rw);
     tmemClose(&g_nvTransfermem);
 }
+#endif
 
 Service* nvGetServiceSession(void) {
     return &g_nvSrv;
 }
 
+#if !defined(__SWITCH2__)
 static Result _nvCmdInitialize(Handle proc, Handle sharedmem, u32 transfermem_size) {
     return serviceDispatchIn(&g_nvSrv, 3, transfermem_size,
         .in_num_handles = 2,
@@ -120,6 +168,7 @@ static Result _nvCmdInitialize(Handle proc, Handle sharedmem, u32 transfermem_si
 static Result _nvSetClientPID(u64 AppletResourceUserId) {
     return serviceDispatchIn(&g_nvSrv, 8, AppletResourceUserId, .in_send_pid = true);
 }
+#endif
 
 Result nvOpen(u32 *fd, const char *devicepath) {
     struct {
@@ -141,6 +190,26 @@ Result nvOpen(u32 *fd, const char *devicepath) {
     return rc;
 }
 
+#if defined(__SWITCH2__)
+// Requests that go to the duplicate session. The set is
+// upstream's, except that 0xD278020F replaces NVDISP_FLIP.
+static inline Service* _nvGetSessionForRequest(u32 request) {
+    u32 tmp = request & 0xC000FFFF;
+    if (
+        tmp     == 0xC0004402 ||                // NVGPU_DBG_GPU_IOCTL_REG_OPS
+        tmp     == 0xC000471C ||                // NVGPU_GPU_IOCTL_GET_GPU_TIME
+        tmp     == 0xC0004808 ||                // NVGPU_IOCTL_CHANNEL_SUBMIT_GPFIFO
+        (tmp >= 0xC0000024 && tmp <= 0xC0000026) || // NVHOST_IOCTL_CHANNEL_{SUBMIT,MAP_CMD_BUFFER,UNMAP_CMD_BUFFER}_EX
+        request == 0xC018481B ||                // NVGPU_IOCTL_CHANNEL_KICKOFF_PB
+        request == 0xC004001C ||                // NVHOST_IOCTL_CTRL_EVENT_SIGNAL
+        request == 0xC010001E ||                // NVHOST_IOCTL_CTRL_EVENT_WAIT_ASYNC
+        request == 0x400C060E ||                // NVSCHED_CTRL_PUT_CONDUCTOR_FLIP_FENCE
+        request == 0xD278020F
+        )
+        return &g_nvSrvClone;
+    return &g_nvSrv;
+}
+#else
 // Get the appropriate session for the specified request (same logic as official sw)
 static inline Service* _nvGetSessionForRequest(u32 request) {
     u32 tmp = request & 0xC000FFFF;
@@ -160,6 +229,7 @@ static inline Service* _nvGetSessionForRequest(u32 request) {
         return &g_nvSrvClone;
     return &g_nvSrv;
 }
+#endif
 
 Result nvIoctl(u32 fd, u32 request, void* argp) {
     size_t bufsize = _NV_IOC_SIZE(request);

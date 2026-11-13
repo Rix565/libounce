@@ -29,6 +29,7 @@ static Result _hidActivateTouchScreen(void);
 static Result _hidActivateMouse(void);
 static Result _hidActivateKeyboard(void);
 static Result _hidActivateNpad(void);
+static Result _hidCmdInU32AruidNoOut(u32 inval, u32 cmd_id);
 static Result _hidActivateGesture(void);
 
 static Result _hidGetVibrationDeviceHandles(HidVibrationDeviceHandle *handles, s32 total_handles, HidNpadIdType id, HidNpadStyleTag style);
@@ -307,6 +308,12 @@ void hidInitializeNpad(void) {
     if (R_FAILED(rc)) diagAbortWithResult(rc);
 }
 
+#if defined(__SWITCH2__)
+Result hidActivateNpadWithRevision(u32 revision) {
+    return _hidCmdInU32AruidNoOut(revision, 109);
+}
+#endif
+
 static size_t _hidGetNpadStates(HidNpadCommonLifo *lifo, HidNpadCommonState *states, size_t count) {
     if (count > 17) count = 17;
     return _hidGetStates(&lifo->header, lifo->storage, 17, offsetof(HidNpadCommonStateAtomicStorage,state), offsetof(HidNpadCommonState,sampling_number), states, sizeof(HidNpadCommonState), count);
@@ -498,6 +505,29 @@ size_t hidGetNpadStatesLager(HidNpadIdType id, HidNpadLagerState *states, size_t
 }
 
 size_t hidGetNpadStatesSystemExt(HidNpadIdType id, HidNpadSystemExtState *states, size_t count) {
+#if defined(__SWITCH2__)
+    if (count == 1) {
+        // Check the outer sequence for a stable even value, with dmb ishld
+        // after copying the payload.
+        HidNpadCommonLifo *lifo = &_hidGetNpadInternalState(id)->system_ext_lifo;
+        s32 available = atomic_load_explicit(&lifo->header.count, memory_order_acquire);
+        s32 tail = atomic_load_explicit(&lifo->header.tail, memory_order_acquire);
+        if (available <= 0 || tail < 0 || tail >= 17)
+            return 0;
+        HidNpadCommonStateAtomicStorage *entry = &lifo->storage[tail];
+        for (u32 attempt = 0; attempt < 2; attempt++) {
+            u64 before = atomic_load_explicit(&entry->sampling_number, memory_order_acquire);
+            if (before & 1)
+                continue;
+            memcpy(states, &entry->state, sizeof(*states));
+            atomic_thread_fence(memory_order_acquire);
+            u64 after = atomic_load_explicit(&entry->sampling_number, memory_order_acquire);
+            if (before == after)
+                return 1;
+        }
+        return 0;
+    }
+#endif
     size_t total = _hidGetNpadStates(&_hidGetNpadInternalState(id)->system_ext_lifo, states, count);
 
     // sdknso would handle button-bitmasking with ControlPadRestriction here.

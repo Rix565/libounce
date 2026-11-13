@@ -75,13 +75,22 @@ NX_INLINE Result _fsObjectDispatchImpl(
 NX_GENERATE_SERVICE_GUARD(fs);
 
 Result _fsInitialize(void) {
+    // [Switch 2] An fsp-srv override is an already-initialized root supplied
+    // by the loader. Clone and convert that session below.
+    // Keep the proxy's existing process identity. SetCurrentProcess would
+    // replace the PID that FS later uses for SD card access.
+#if defined(__SWITCH2__)
+    bool preinitialized = smGetServiceOverride(smEncodeName("fsp-srv")) != INVALID_HANDLE;
+#else
+    bool preinitialized = false;
+#endif
     Result rc = smGetService(&g_fsSrv, "fsp-srv");
 
     if (R_SUCCEEDED(rc)) {
         rc = serviceConvertToDomain(&g_fsSrv);
     }
 
-    if (R_SUCCEEDED(rc)) {
+    if (R_SUCCEEDED(rc) && !preinitialized) {
         u64 pid_placeholder = 0;
         serviceAssumeDomain(&g_fsSrv);
         rc = serviceDispatchIn(&g_fsSrv, 1, pid_placeholder, .in_send_pid = true);

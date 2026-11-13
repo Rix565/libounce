@@ -5,10 +5,34 @@
 #include "sf/service.h"
 #include "services/sm.h"
 
+#if defined(__SWITCH2__)
+// A program started by hbloader runs in the loader's process, and a session
+// that it leaves open stays open for the next program. While its reference
+// count is nonzero, each guard is also in a list of open services, so that
+// _serviceGuardCloseAll can close what the program left open when it exits
+// (runtime/init.c, __libnx_exit).
+typedef struct ServiceGuard {
+    Mutex mutex;
+    u32 refCount;
+    void (*cleanupFunc)(void);       ///< Set while the service is in the list.
+    struct ServiceGuard* next;       ///< The service opened before this one.
+    struct ServiceGuard** prev_next;
+} ServiceGuard;
+
+// switch2/services/service_list.c. Call these with g->mutex held; they take
+// the list's lock.
+void _serviceGuardAddOpen(ServiceGuard* g, void (*cleanupFunc)(void));
+void _serviceGuardRemoveOpen(ServiceGuard* g);
+
+/// Closes every service that is still open, the newest first, so that each
+/// closes before the services that were opened before it.
+void _serviceGuardCloseAll(void);
+#else
 typedef struct ServiceGuard {
     Mutex mutex;
     u32 refCount;
 } ServiceGuard;
+#endif
 
 NX_INLINE bool serviceGuardBeginInit(ServiceGuard* g)
 {
@@ -16,6 +40,19 @@ NX_INLINE bool serviceGuardBeginInit(ServiceGuard* g)
     return (g->refCount++) == 0;
 }
 
+#if defined(__SWITCH2__)
+NX_INLINE Result serviceGuardEndInit(ServiceGuard* g, Result rc, void (*cleanupFunc)(void))
+{
+    if (R_FAILED(rc)) {
+        cleanupFunc();
+        --g->refCount;
+    } else if (g->refCount == 1) {
+        _serviceGuardAddOpen(g, cleanupFunc);
+    }
+    mutexUnlock(&g->mutex);
+    return rc;
+}
+#else
 NX_INLINE Result serviceGuardEndInit(ServiceGuard* g, Result rc, void (*cleanupFunc)(void))
 {
     if (R_FAILED(rc)) {
@@ -25,7 +62,19 @@ NX_INLINE Result serviceGuardEndInit(ServiceGuard* g, Result rc, void (*cleanupF
     mutexUnlock(&g->mutex);
     return rc;
 }
+#endif
 
+#if defined(__SWITCH2__)
+NX_INLINE void serviceGuardExit(ServiceGuard* g, void (*cleanupFunc)(void))
+{
+    mutexLock(&g->mutex);
+    if (g->refCount && (--g->refCount) == 0) {
+        _serviceGuardRemoveOpen(g);
+        cleanupFunc();
+    }
+    mutexUnlock(&g->mutex);
+}
+#else
 NX_INLINE void serviceGuardExit(ServiceGuard* g, void (*cleanupFunc)(void))
 {
     mutexLock(&g->mutex);
@@ -33,6 +82,7 @@ NX_INLINE void serviceGuardExit(ServiceGuard* g, void (*cleanupFunc)(void))
         cleanupFunc();
     mutexUnlock(&g->mutex);
 }
+#endif
 
 #define NX_GENERATE_SERVICE_GUARD_PARAMS(name, _paramdecl, _parampass) \
 \

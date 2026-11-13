@@ -1588,6 +1588,16 @@ size_t hidGetCaptureButtonStates(HidCaptureButtonState *states, size_t count);
 /// Initialize Npad. Must be called when Npad is being used. Used automatically by \ref hidScanInput when required.
 void hidInitializeNpad(void);
 
+#if defined(__SWITCH2__)
+/**
+ * @brief Activates Npad with an explicit revision.
+ * @note HID command 109. This returns the service Result to
+ * callers that need to handle activation failure without aborting.
+ * @param[in] revision Npad revision.
+ */
+Result hidActivateNpadWithRevision(u32 revision);
+#endif
+
 /**
  * @brief Gets the StyleSet for the specified Npad.
  * @param[in] id \ref HidNpadIdType

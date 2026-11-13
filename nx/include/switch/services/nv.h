@@ -2,6 +2,7 @@
  * @file nv.h
  * @brief NVIDIA low level driver (nvdrv*) service IPC wrapper.
  * @author yellows8
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once

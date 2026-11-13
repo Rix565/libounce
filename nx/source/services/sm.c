@@ -54,6 +54,15 @@ static Result _smTipcCmdInPid(u32 cmd_id) {
 }
 
 Result _smInitialize(void) {
+    Handle override = smGetServiceOverride(smEncodeName("sm:"));
+    if (override != INVALID_HANDLE) {
+        // The loader owns this already-initialized session. Do not register
+        // this process or send Close when the NRO exits.
+        serviceCreate(&g_smSrv.cmif, override);
+        g_smSrv.cmif.own_handle = false;
+        return 0;
+    }
+
     Handle sm_handle;
     Result rc = svcConnectToNamedPort(&sm_handle, "sm:");
     while (R_VALUE(rc) == KERNELRESULT(NotFound)) {
@@ -143,6 +152,24 @@ Result smRegisterServiceTipc(Handle* handle_out, SmServiceName name, bool is_lig
     );
 }
 
+#if defined(__SWITCH2__)
+// SM TIPC command 2: RegisterService in a service space set.
+Result smRegisterServiceInSpace(Handle* handle_out, u32 space_set, SmServiceName name, bool is_light, s32 max_sessions) {
+    const struct {
+        u32 space_set;
+        SmServiceName service_name;
+        s32 max_sessions;
+        u8 is_light;
+    } in = { space_set, name, max_sessions, is_light!=0 };
+
+    _Static_assert(sizeof(in) == 20, "native SM registration size");
+    return tipcDispatchIn(&g_smSrv.tipc, 2, in,
+        .out_handle_attrs = { SfOutHandleAttr_HipcMove },
+        .out_handles = handle_out,
+    );
+}
+#endif
+
 Result smUnregisterService(SmServiceName name) {
     if (_smShouldUseTipc())
         return smUnregisterServiceTipc(name);
@@ -157,6 +184,20 @@ Result smUnregisterServiceCmif(SmServiceName name) {
 Result smUnregisterServiceTipc(SmServiceName name) {
     return tipcDispatchIn(&g_smSrv.tipc, 3, name);
 }
+
+#if defined(__SWITCH2__)
+// [Switch 2] TIPC command 3 with a space set: the request is the u32 space
+// set, then the eight-byte service name.
+Result smUnregisterServiceInSpace(u32 space_set, SmServiceName name) {
+    const struct {
+        u32 space_set;
+        SmServiceName service_name;
+    } in = { space_set, name };
+
+    _Static_assert(sizeof(in) == 12, "native SM unregister size");
+    return tipcDispatchIn(&g_smSrv.tipc, 3, in);
+}
+#endif
 
 Result smDetachClient(void) {
     if (hosversionIsAtmosphere())

@@ -88,6 +88,16 @@ extern "C" {
 #include "switch/services/irs.h"
 #include "switch/services/pl.h"
 #include "switch/services/vi.h"
+#if defined(__SWITCH2__)
+#include "switch2/kernel/svc.h"
+#include "switch2/services/vi2.h"
+#include "switch2/services/gsv.h"
+#include "switch2/services/viddec.h"
+#include "switch2/video/decoder.h"
+#include "switch2/memory/heap.h"
+#include "switch2/services/audu.h"
+#include "switch2/services/nmouse.h"
+#endif
 #include "switch/services/nv.h"
 #include "switch/services/nifm.h"
 #include "switch/services/nim.h"

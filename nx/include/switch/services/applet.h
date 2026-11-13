@@ -3,6 +3,7 @@
  * @brief Applet (applet) service IPC wrapper.
  * @note For wrappers which launch LibraryApplets etc, see switch/applets/.
  * @author yellows8
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
@@ -698,6 +699,17 @@ Result appletGpuErrorHandlerFinishManualGpuErrorHandling(AppletGpuErrorHandler *
 
 ///@name ISelfController
 ///@{
+
+#if defined(__SWITCH2__)
+/**
+ * @brief GetGraphicsSupervisor.
+ * @param[out] out Native GSV1 session handle.
+ * @note This is a COPY handle. On success the caller owns this
+ * session handle and must close it with svcCloseHandle. gsvInitialize adopts
+ * it with tipcCreate and gsvExit closes it.
+ */
+Result appletGetGraphicsSupervisor(Handle* out);
+#endif
 
 /**
  * @brief Delay exiting until \ref appletUnlockExit is called, with a 15 second timeout once exit is requested.

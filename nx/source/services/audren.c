@@ -5,6 +5,9 @@
 #include "runtime/hosversion.h"
 #include "services/applet.h"
 #include "services/audren.h"
+#if defined(__SWITCH2__)
+#include "switch2/services/audu.h"
+#endif
 
 u32 g_audrenRevision;
 
@@ -34,6 +37,18 @@ static Result _audrenGetWorkBufferSize(Service* srv, const AudioRendererParamete
 static Result _audrenQuerySystemEvent(Event* out_event);
 
 NX_GENERATE_SERVICE_GUARD_PARAMS(audren, (const AudioRendererConfig* config), (config));
+
+#if defined(__SWITCH2__)
+// A Switch 2 game gets the AudioRenderer manager from the aud:u root
+// (command 2). See switch2/services/audu.c.
+static Result _audrenOpenManager(Service* srv_out) {
+    return auduOpenAudioRendererManager(srv_out);
+}
+#else
+static Result _audrenOpenManager(Service* srv_out) {
+    return smGetService(srv_out, "audren:u");
+}
+#endif
 
 Result _audrenInitialize(const AudioRendererConfig* config) {
     Result rc=0;
@@ -77,8 +92,9 @@ Result _audrenInitialize(const AudioRendererConfig* config) {
     param.revision         = g_audrenRevision;
 
     // Open IAudioRendererManager
+    // [Switch 2] The manager comes from aud:u, not audren:u. See _audrenOpenManager.
     Service audrenMgrSrv;
-    rc = smGetService(&audrenMgrSrv, "audren:u");
+    rc = _audrenOpenManager(&audrenMgrSrv);
     if (R_SUCCEEDED(rc)) {
         // Get required work buffer size
         u64 workBufSize = 0;

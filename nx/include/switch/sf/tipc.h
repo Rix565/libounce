@@ -66,6 +66,18 @@ NX_INLINE void tipcClose(TipcService* s)
     *s = (TipcService){};
 }
 
+/**
+ * @brief Sends a request without data to a command whose reply has no data words.
+ * @param[in] s TIPC service object.
+ * @param[in] request_id Command ID.
+ * @return Result of the kernel request. The reply carries no service result.
+ */
+NX_INLINE Result tipcDispatchWithoutResult(TipcService* s, u32 request_id)
+{
+    hipcMakeRequestInline(armGetTls(), .type = request_id + 16);
+    return svcSendSyncRequest(s->session);
+}
+
 NX_CONSTEXPR void tipcRequestInBuffer(HipcRequest* req, const void* buffer, size_t size, HipcBufferMode mode)
 {
     *req->send_buffers++ = hipcMakeBuffer(buffer, size, mode);

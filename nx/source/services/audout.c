@@ -4,6 +4,9 @@
 #include "services/audout.h"
 #include "services/applet.h"
 #include "runtime/hosversion.h"
+#if defined(__SWITCH2__)
+#include "switch2/services/audu.h"
+#endif
 
 #define DEVICE_NAME_LENGTH 0x100
 #define DEFAULT_SAMPLE_RATE 0xBB80
@@ -27,9 +30,22 @@ NX_GENERATE_SERVICE_GUARD(audout);
 NX_GENERATE_SERVICE_GUARD(audouta);
 NX_GENERATE_SERVICE_GUARD(audoutd);
 
+#if defined(__SWITCH2__)
+// A Switch 2 game gets the AudioOut manager from the aud:u root (command 1).
+// See switch2/services/audu.c.
+static Result _audoutOpenManager(Service* srv_out) {
+    return auduOpenAudioOutManager(srv_out);
+}
+#else
+static Result _audoutOpenManager(Service* srv_out) {
+    return smGetService(srv_out, "audout:u");
+}
+#endif
+
 Result _audoutInitialize(void) {
     Result rc = 0;
-    rc = smGetService(&g_audoutSrv, "audout:u");
+    // [Switch 2] The manager comes from aud:u, not audout:u. See _audoutOpenManager.
+    rc = _audoutOpenManager(&g_audoutSrv);
 
     // Setup the default device
     if (R_SUCCEEDED(rc)) {

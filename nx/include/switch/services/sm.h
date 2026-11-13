@@ -3,6 +3,7 @@
  * @brief Service manager (sm) IPC wrapper.
  * @author plutoo
  * @author yellows8
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
@@ -124,6 +125,19 @@ Result smRegisterServiceCmif(Handle* handle_out, SmServiceName name, bool is_lig
 /// Same as \ref smRegisterService, but always using tipc serialization.
 Result smRegisterServiceTipc(Handle* handle_out, SmServiceName name, bool is_light, s32 max_sessions);
 
+#if defined(__SWITCH2__)
+/**
+ * @brief Registers a service in a native service space set using TIPC.
+ * @param[out] handle_out Server port handle. The caller owns it and must close it.
+ * @param[in] space_set Native ServiceSpaceSet value.
+ * @param[in] name Service name.
+ * @param[in] is_light Whether to create a light service.
+ * @param[in] max_sessions Maximum concurrent sessions.
+ * @note Requires an initialized SM session and server permission.
+ */
+Result smRegisterServiceInSpace(Handle* handle_out, u32 space_set, SmServiceName name, bool is_light, s32 max_sessions);
+#endif
+
 /**
  * @brief Unregisters a previously registered service in SM.
  * @param[in] name Name of the service.
@@ -136,6 +150,17 @@ Result smUnregisterServiceCmif(SmServiceName name);
 
 /// Same as \ref smUnregisterService, but always using tipc serialization.
 Result smUnregisterServiceTipc(SmServiceName name);
+
+#if defined(__SWITCH2__)
+/**
+ * @brief Unregisters a service from a native service space set using TIPC.
+ * @param[in] space_set Native ServiceSpaceSet value used for registration.
+ * @param[in] name Service name.
+ * @return Result code.
+ * @note [Switch 2] Call before closing the registered server port.
+ */
+Result smUnregisterServiceInSpace(u32 space_set, SmServiceName name);
+#endif
 
 /**
  * @brief Detaches the current SM session.

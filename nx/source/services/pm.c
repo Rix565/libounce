@@ -72,7 +72,8 @@ Result pmdmntStartProcess(u64 pid) {
 }
 
 Result pmdmntGetProcessId(u64* pid_out, u64 program_id) {
-    return _pmCmdInU64OutU64(pid_out, program_id, &g_pmdmntSrv, hosversionAtLeast(5,0,0) ? 2 : 3);
+    return _pmCmdInU64OutU64(pid_out, program_id, &g_pmdmntSrv,
+                            hosversionAtLeast(5,0,0) ? 2 : 3);
 }
 
 Result pmdmntHookToCreateProcess(Event* out_event, u64 program_id) {

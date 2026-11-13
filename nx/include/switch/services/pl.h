@@ -2,6 +2,7 @@
  * @file pl.h
  * @brief pl:u service IPC wrapper.
  * @author yellows8
+ * @author kurumuz
  * @copyright libnx Authors
  */
 #pragma once
