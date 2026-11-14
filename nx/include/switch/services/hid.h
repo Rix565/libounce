@@ -2555,7 +2555,7 @@ Result hidIsFirmwareUpdateNeededForNotification(bool *out);
 
 /**
  * @brief SetTouchScreenOutputRanges
- * @note Only available on [17.0.0+], previously named SetTouchScreenResolution [17.0.0-19.0.1]
+ * @note Must be called before hidInitializeTouchScreen. Available on [17.0.0+], previously named SetTouchScreenResolution [17.0.0-19.0.1]
  * @param[in] width  Width
  * @param[in] height Height
  */
